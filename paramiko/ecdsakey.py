@@ -136,40 +136,47 @@ class ECDSAKey(PKey):
             c_class = self.signing_key.curve.__class__
             self.ecdsa_curve = self._ECDSA_CURVES.get_by_curve_class(c_class)
         else:
-            # Must set ecdsa_curve first; subroutines called herein may need to
-            # spit out our get_name(), which relies on this.
-            key_type = msg.get_text()
-            # But this also means we need to hand it a real key/curve
-            # identifier, so strip out any cert business. (NOTE: could push
-            # that into _ECDSACurveSet.get_by_key_format_identifier(), but it
-            # feels more correct to do it here?)
-            suffix = "-cert-v01@openssh.com"
-            if key_type.endswith(suffix):
-                key_type = key_type[: -len(suffix)]
-            self.ecdsa_curve = self._ECDSA_CURVES.get_by_key_format_identifier(
-                key_type
-            )
-            key_types = self._ECDSA_CURVES.get_key_format_identifier_list()
-            cert_types = [
-                "{}-cert-v01@openssh.com".format(x) for x in key_types
-            ]
-            self._check_type_and_load_cert(
-                msg=msg, key_type=key_types, cert_type=cert_types
-            )
-            curvename = msg.get_text()
-            if curvename != self.ecdsa_curve.nist_name:
-                raise SSHException(
-                    "Can't handle curve of type {}".format(curvename)
-                )
-
-            pointinfo = msg.get_binary()
             try:
-                key = ec.EllipticCurvePublicKey.from_encoded_point(
-                    self.ecdsa_curve.curve_class(), pointinfo
+                # Must set ecdsa_curve first; subroutines called herein may
+                # need to spit out our get_name(), which relies on this.
+                key_type = msg.get_text()
+                # But this also means we need to hand it a real key/curve
+                # identifier, so strip out any cert business. (NOTE: could
+                # push that into _ECDSACurveSet.get_by_key_format_identifier(),
+                # but it feels more correct to do it here?)
+                suffix = "-cert-v01@openssh.com"
+                if key_type.endswith(suffix):
+                    key_type = key_type[: -len(suffix)]
+                self.ecdsa_curve = (
+                    self._ECDSA_CURVES.get_by_key_format_identifier(key_type)
                 )
-                self.verifying_key = key
-            except ValueError:
-                raise SSHException("Invalid public key")
+                key_types = (
+                    self._ECDSA_CURVES.get_key_format_identifier_list()
+                )
+                cert_types = [
+                    "{}-cert-v01@openssh.com".format(x) for x in key_types
+                ]
+                self._check_type_and_load_cert(
+                    msg=msg, key_type=key_types, cert_type=cert_types
+                )
+                curvename = msg.get_text()
+                if curvename != self.ecdsa_curve.nist_name:
+                    raise SSHException(
+                        "Can't handle curve of type {}".format(curvename)
+                    )
+
+                pointinfo = msg.get_binary()
+                try:
+                    key = ec.EllipticCurvePublicKey.from_encoded_point(
+                        self.ecdsa_curve.curve_class(), pointinfo
+                    )
+                    self.verifying_key = key
+                except ValueError:
+                    raise SSHException("Invalid public key")
+            except EOFError as e:
+                # A truncated/short key blob is an invalid key, not a stream
+                # EOF; surface it through the documented key-loading error.
+                raise SSHException(str(e))
 
     @classmethod
     def identifiers(cls):

@@ -100,14 +100,28 @@ class Message:
     def get_bytes(self, n):
         """
         Return the next ``n`` bytes of the message, without decomposing into an
-        int, decoded string, etc.  Just the raw bytes are returned. Returns a
-        string of ``n`` zero bytes if there weren't ``n`` bytes remaining in
-        the message.
+        int, decoded string, etc.  Just the raw bytes are returned.
+
+        :raises:
+            `EOFError` -- if fewer than ``n`` bytes remain in the message.
+            A truncated message (whose declared field length does not match its
+            actual payload) is therefore rejected explicitly rather than being
+            silently zero-padded or returned short, which would let a malicious
+            peer fabricate or shift field boundaries.
+
+        .. versionchanged:: 5.1.0
+            Previously, a short read was silently padded with zero bytes (when
+            the declared length was under 1 MiB) or silently returned short
+            (at or above 1 MiB). Both forms now deterministically raise
+            `EOFError`, matching the library's existing end-of-stream signal.
         """
         b = self.packet.read(n)
-        max_pad_size = 1 << 20  # Limit padding to 1 MB
-        if len(b) < n < max_pad_size:
-            return b + zero_byte * (n - len(b))
+        if len(b) < n:
+            raise EOFError(
+                "message truncated: wanted {} bytes, only {} available".format(
+                    n, len(b)
+                )
+            )
         return b
 
     def get_byte(self):
@@ -115,9 +129,12 @@ class Message:
         Return the next byte of the message, without decomposing it.  This
         is equivalent to `get_bytes(1) <get_bytes>`.
 
-        :return:
-            the next (`bytes`) byte of the message, or ``b'\000'`` if there
-            aren't any bytes remaining.
+        :return: the next (`bytes`) byte of the message.
+        :raises: `EOFError` -- if there are no bytes remaining.
+
+        .. versionchanged:: 5.1.0
+            Previously returned ``b'\\000'`` when no bytes remained; it now
+            raises `EOFError`, like the rest of the truncated-read handling.
         """
         return self.get_bytes(1)
 

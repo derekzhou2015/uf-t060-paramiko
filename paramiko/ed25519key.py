@@ -49,12 +49,19 @@ class Ed25519Key(PKey):
         if msg is None and data is not None:
             msg = Message(data)
         if msg is not None:
-            self._check_type_and_load_cert(
-                msg=msg,
-                key_type=self.name,
-                cert_type="ssh-ed25519-cert-v01@openssh.com",
-            )
-            self._verifying_key = nacl.signing.VerifyKey(msg.get_binary())
+            try:
+                self._check_type_and_load_cert(
+                    msg=msg,
+                    key_type=self.name,
+                    cert_type="ssh-ed25519-cert-v01@openssh.com",
+                )
+                self._verifying_key = nacl.signing.VerifyKey(
+                    msg.get_binary()
+                )
+            except EOFError as e:
+                # A truncated/short key blob is an invalid key, not a stream
+                # EOF; surface it through the documented key-loading error.
+                raise SSHException(str(e))
         elif filename is not None:
             with open(filename, "r") as f:
                 pkformat, data = self._read_private_key("OPENSSH", f)

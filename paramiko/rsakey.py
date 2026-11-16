@@ -68,16 +68,22 @@ class RSAKey(PKey):
         if key is not None:
             self.key = key
         else:
-            self._check_type_and_load_cert(
-                msg=msg,
-                # NOTE: this does NOT change when using rsa2 signatures; it's
-                # purely about key loading, not exchange or verification
-                key_type=self.name,
-                cert_type="ssh-rsa-cert-v01@openssh.com",
-            )
-            self.key = rsa.RSAPublicNumbers(
-                e=msg.get_mpint(), n=msg.get_mpint()
-            ).public_key(default_backend())
+            try:
+                self._check_type_and_load_cert(
+                    msg=msg,
+                    # NOTE: this does NOT change when using rsa2 signatures;
+                    # it's purely about key loading, not exchange or
+                    # verification
+                    key_type=self.name,
+                    cert_type="ssh-rsa-cert-v01@openssh.com",
+                )
+                self.key = rsa.RSAPublicNumbers(
+                    e=msg.get_mpint(), n=msg.get_mpint()
+                ).public_key(default_backend())
+            except EOFError as e:
+                # A truncated/short key blob is an invalid key, not a stream
+                # EOF; surface it through the documented key-loading error.
+                raise SSHException(str(e))
 
     @classmethod
     def identifiers(cls):

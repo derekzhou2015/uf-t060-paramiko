@@ -22,6 +22,8 @@ Some unit tests for ssh protocol message blocks.
 
 import unittest
 
+import pytest
+
 from paramiko.message import Message
 from paramiko.common import byte_chr, zero_byte
 
@@ -111,3 +113,96 @@ class MessageTest(unittest.TestCase):
         assert str(msg) == f"paramiko.Message({self.__d!r})"
         assert repr(msg) == str(msg)
         assert bytes(msg) == msg.asbytes() == self.__d
+
+    def test_get_bytes_exact_fit_succeeds(self):
+        # Legal boundary: asking for exactly the number of bytes remaining
+        # must succeed, with no padding and no error.
+        payload = b"abcde"
+        msg = Message(payload)
+        assert msg.get_bytes(len(payload)) == payload
+
+    def test_get_bytes_partial_then_exact_remainder_succeeds(self):
+        # Legal boundary across multiple reads: each read that stays within
+        # the buffer succeeds; only a read that runs past the end fails.
+        msg = Message(b"abcdef")
+        assert msg.get_bytes(2) == b"ab"
+        assert msg.get_bytes(4) == b"cdef"
+        with pytest.raises(EOFError):
+            msg.get_bytes(1)
+
+    def test_get_bytes_zero_length_does_not_raise_on_empty(self):
+        # A zero-length read at EOF is not a truncation and must stay valid.
+        assert Message(b"").get_bytes(0) == b""
+
+    def test_get_bytes_short_declared_length_raises(self):
+        # Malformed form #1: declared length below the old 1 MiB padding
+        # threshold but larger than the actual payload. This used to be
+        # silently zero-padded; it must now be rejected deterministically.
+        msg = Message(b"\x01\x02")
+        with pytest.raises(EOFError):
+            msg.get_bytes(5)
+
+    def test_get_bytes_large_declared_length_raises(self):
+        # Malformed form #2: declared length at/over the old 1 MiB threshold
+        # with a short payload. This used to silently return the short read;
+        # it must now be rejected the same way as the small case.
+        msg = Message(b"short")
+        with pytest.raises(EOFError):
+            msg.get_bytes(1 << 20)
+
+    def test_get_bytes_does_not_zero_pad(self):
+        # Explicitly guarantee the vulnerable zero-fill behavior is gone: the
+        # real bytes must never be augmented with fabricated zero bytes.
+        msg = Message(b"\x01\x02")
+        with pytest.raises(EOFError):
+            msg.get_bytes(4)
+        # Pointer advanced over the two real bytes only; nothing fabricated.
+        assert msg.get_remainder() == b""
+
+    def test_get_byte_at_end_raises(self):
+        # get_byte delegates to get_bytes, so an end-of-stream byte read must
+        # raise rather than returning a fabricated b'\x00'.
+        msg = Message(b"x")
+        assert msg.get_byte() == b"x"
+        with pytest.raises(EOFError):
+            msg.get_byte()
+
+    def test_get_boolean_at_end_raises(self):
+        msg = Message(b"")
+        with pytest.raises(EOFError):
+            msg.get_boolean()
+
+    def test_get_int_truncated_raises(self):
+        # Fixed-width readers inherit the guarantee: a truncated 4-byte int
+        # raises instead of being unpacked from zero-padded data.
+        msg = Message(b"\x00\x01")
+        with pytest.raises(EOFError):
+            msg.get_int()
+
+    def test_get_binary_short_payload_raises(self):
+        # The attacker-controlled entry point: a length-prefixed string whose
+        # declared length exceeds the remaining payload must be rejected, not
+        # returned as a zero-padded or short bytestring.
+        # Declares 10 bytes but only provides 3.
+        msg = Message(b"\x00\x00\x00\x0aabc")
+        with pytest.raises(EOFError):
+            msg.get_binary()
+
+    def test_get_binary_large_short_payload_raises(self):
+        # Same attack through the >1 MiB branch: a huge declared length with
+        # a tiny actual payload must be rejected identically.
+        declared = (1 << 20).to_bytes(4, "big")
+        msg = Message(declared + b"abc")
+        with pytest.raises(EOFError):
+            msg.get_binary()
+
+    def test_get_binary_well_formed_succeeds(self):
+        # Legal length-prefixed field round-trips and leaves the following
+        # field boundary intact. Reading happens on a fresh Message built from
+        # the encoded bytes, mirroring how the peer side parses a packet.
+        encoded = Message()
+        encoded.add_string(b"hello")
+        encoded.add_int(7)
+        msg = Message(encoded.asbytes())
+        assert msg.get_binary() == b"hello"
+        assert msg.get_int() == 7
